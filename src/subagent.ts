@@ -1,14 +1,16 @@
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 // @ts-ignore - types not exported from main entry
-import type { PluginHookSubagentSpawningEvent, PluginHookSubagentSpawningResult } from "openclaw/plugin-sdk/plugins/hooks";
+import type { PluginHookSubagentSpawningEvent, PluginHookSubagentSpawningResult, PluginHookSubagentEndedEvent } from "openclaw/plugin-sdk/plugins/hooks";
 import { sendMessageFeishu } from "./send.js";
 import { resolveFeishuAccount } from "./accounts.js";
+
+const LOG_PREFIX = "[Feishu Subagent]";
 
 /**
  * Subagent context for Feishu channel.
  * Stores the chat context and provides sendMessage capability.
  */
-export interface FeishuSubagentContext {
+interface FeishuSubagentContext {
   sessionKey: string;
   chatId: string;
   accountId?: string;
@@ -22,6 +24,13 @@ export interface FeishuSubagentContext {
  * Key: childSessionKey (e.g., "agent:main:subagent:xxx")
  */
 const subagentContexts = new Map<string, FeishuSubagentContext>();
+
+/**
+ * Simple rate limiter for sendMessage to avoid API throttling.
+ * Limits to 1 message per 500ms.
+ */
+const sendRateLimitMs = 500;
+const lastSendTime = new Map<string, number>();
 
 /**
  * Handle subagent spawning request.
@@ -63,8 +72,17 @@ export async function handleSubagentSpawning(
     /**
      * Send a message from the subagent to the parent chat.
      * This is the core function that enables subagent communication.
+     * Includes rate limiting to avoid API throttling (max 1 msg / 500ms).
      */
     sendMessage: async (content: string) => {
+      const now = Date.now();
+      const lastTime = lastSendTime.get(chatId) || 0;
+      const delay = Math.max(0, sendRateLimitMs - (now - lastTime));
+      
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      
       try {
         await sendMessageFeishu({
           cfg,
@@ -72,8 +90,9 @@ export async function handleSubagentSpawning(
           text: content,
           accountId,
         });
+        lastSendTime.set(chatId, Date.now());
       } catch (error) {
-        console.error(`[Feishu] Failed to send subagent message:`, error);
+        console.error(`${LOG_PREFIX} Failed to send message:`, error);
         throw error;
       }
     },
@@ -82,7 +101,7 @@ export async function handleSubagentSpawning(
      * Cleanup function called when subagent ends.
      */
     cleanup: async () => {
-      console.log(`[Feishu] Subagent ${childSessionKey} cleaned up`);
+      console.log(`${LOG_PREFIX} Subagent ${childSessionKey} cleaned up`);
       subagentContexts.delete(childSessionKey);
     },
   };
@@ -90,7 +109,7 @@ export async function handleSubagentSpawning(
   // Store context for future message delivery
   subagentContexts.set(childSessionKey, context);
   
-  console.log(`[Feishu] Subagent spawned: ${childSessionKey} -> chat: ${chatId}`);
+  console.log(`${LOG_PREFIX} Spawned: ${childSessionKey} -> chat: ${chatId}`);
   
   return {
     status: "ok",
@@ -99,34 +118,27 @@ export async function handleSubagentSpawning(
 }
 
 /**
- * Handle message delivery from subagent to parent chat.
- * This hook is called when a subagent wants to send a message.
+ * Handle subagent ended event.
+ * Automatically cleans up the subagent context to prevent memory leaks.
  */
-export async function handleSubagentMessage(
-  childSessionKey: string,
-  content: string
-): Promise<void> {
-  const context = subagentContexts.get(childSessionKey);
-  if (!context) {
-    console.warn(`[Feishu] No context found for subagent ${childSessionKey}`);
-    return;
-  }
+export async function handleSubagentEnded(event: PluginHookSubagentEndedEvent): Promise<void> {
+  const { targetSessionKey, reason } = event;
+  const context = subagentContexts.get(targetSessionKey);
   
-  // Forward message to parent chat
-  await context.sendMessage(content);
+  if (context?.cleanup) {
+    await context.cleanup();
+  } else {
+    // Fallback: just delete from map if no cleanup function
+    subagentContexts.delete(targetSessionKey);
+    console.log(`${LOG_PREFIX} Cleaned up (ended): ${targetSessionKey}, reason: ${reason}`);
+  }
 }
 
 /**
- * Get subagent context by session key.
+ * Clean up a subagent context by session key.
+ * Called automatically when subagent ends.
  */
-export function getSubagentContext(sessionKey: string): FeishuSubagentContext | undefined {
-  return subagentContexts.get(sessionKey);
-}
-
-/**
- * Clean up a subagent context.
- */
-export async function cleanupSubagent(sessionKey: string): Promise<void> {
+async function cleanupSubagent(sessionKey: string): Promise<void> {
   const context = subagentContexts.get(sessionKey);
   if (context?.cleanup) {
     await context.cleanup();

@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 // @ts-ignore - types not exported from main entry
-import type { PluginHookSubagentSpawningEvent } from "openclaw/plugin-sdk/plugins/hooks";
+import type { PluginHookSubagentSpawningEvent, PluginHookSubagentEndedEvent } from "openclaw/plugin-sdk/plugins/hooks";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { feishuPlugin } from "./src/channel.js";
 import { setFeishuRuntime } from "./src/runtime.js";
@@ -12,45 +12,7 @@ import { registerFeishuTaskTools } from "./src/task-tools/index.js";
 import { registerFeishuChatTools } from "./src/chat-tools/index.js";
 import { registerFeishuUrgentTools } from "./src/urgent-tools/index.js";
 import { registerFeishuWikiTools } from "./src/wiki-tools/index.js";
-import { handleSubagentSpawning } from "./src/subagent.js";
-
-export { monitorFeishuProvider } from "./src/monitor.js";
-export {
-  sendMessageFeishu,
-  sendCardFeishu,
-  updateCardFeishu,
-  editMessageFeishu,
-  getMessageFeishu,
-} from "./src/send.js";
-export {
-  uploadImageFeishu,
-  uploadFileFeishu,
-  sendImageFeishu,
-  sendFileFeishu,
-  sendMediaFeishu,
-} from "./src/media.js";
-export { probeFeishu, clearProbeCache } from "./src/probe.js";
-export {
-  addReactionFeishu,
-  removeReactionFeishu,
-  listReactionsFeishu,
-  FeishuEmoji,
-} from "./src/reactions.js";
-export { urgentMessageFeishu, type FeishuUrgentType } from "./src/urgent-tools/index.js";
-export {
-  extractMentionTargets,
-  extractMessageBody,
-  isMentionForwardRequest,
-  formatMentionForText,
-  formatMentionForCard,
-  formatMentionAllForText,
-  formatMentionAllForCard,
-  buildMentionedMessage,
-  buildMentionedCardContent,
-  type MentionTarget,
-} from "./src/mention.js";
-export { feishuPlugin } from "./src/channel.js";
-export { handleSubagentSpawning } from "./src/subagent.js";
+import { handleSubagentSpawning, handleSubagentEnded } from "./src/subagent.js";
 
 const plugin = {
   id: "feishu",
@@ -64,6 +26,11 @@ const plugin = {
     // Register subagent spawning hook to support mode="session" + thread=true
     api.on("subagent_spawning", async (event: PluginHookSubagentSpawningEvent) => {
       return handleSubagentSpawning(event, api.config);
+    });
+    
+    // Register subagent ended hook for automatic cleanup (prevents memory leaks)
+    api.on("subagent_ended", async (event: PluginHookSubagentEndedEvent) => {
+      await handleSubagentEnded(event);
     });
     
     registerFeishuDocTools(api);
