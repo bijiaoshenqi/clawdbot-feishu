@@ -26,10 +26,11 @@ interface FeishuSubagentContext {
 const subagentContexts = new Map<string, FeishuSubagentContext>();
 
 /**
- * Simple rate limiter for sendMessage to avoid API throttling.
- * Limits to 1 message per 500ms.
+ * Rate limiter with queue-based concurrency control.
+ * Limits to 1 message per 500ms per chatId, with proper locking.
  */
 const sendRateLimitMs = 500;
+const sendLocks = new Map<string, Promise<void>>();
 const lastSendTime = new Map<string, number>();
 
 /**
@@ -72,29 +73,49 @@ export async function handleSubagentSpawning(
     /**
      * Send a message from the subagent to the parent chat.
      * This is the core function that enables subagent communication.
-     * Includes rate limiting to avoid API throttling (max 1 msg / 500ms).
+     * Includes rate limiting with queue-based concurrency control (max 1 msg / 500ms).
      */
     sendMessage: async (content: string) => {
-      const now = Date.now();
-      const lastTime = lastSendTime.get(chatId) || 0;
-      const delay = Math.max(0, sendRateLimitMs - (now - lastTime));
-      
-      if (delay > 0) {
-        await new Promise(resolve => setTimeout(resolve, delay));
+      // Wait for any pending send to complete (queue-based locking)
+      const pendingSend = sendLocks.get(chatId);
+      if (pendingSend) {
+        await pendingSend;
       }
       
-      try {
-        await sendMessageFeishu({
-          cfg,
-          to: chatId,
-          text: content,
-          accountId,
-        });
-        lastSendTime.set(chatId, Date.now());
-      } catch (error) {
-        console.error(`${LOG_PREFIX} Failed to send message:`, error);
-        throw error;
-      }
+      // Create a promise for this send operation
+      const sendPromise = (async () => {
+        const now = Date.now();
+        const lastTime = lastSendTime.get(chatId) || 0;
+        const delay = Math.max(0, sendRateLimitMs - (now - lastTime));
+        
+        if (delay > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        try {
+          await sendMessageFeishu({
+            cfg,
+            to: chatId,
+            text: content,
+            accountId,
+          });
+          lastSendTime.set(chatId, Date.now());
+        } catch (error) {
+          console.error(`${LOG_PREFIX} Failed to send message:`, error);
+          throw error;
+        } finally {
+          // Clean up the lock
+          if (sendLocks.get(chatId) === sendPromise) {
+            sendLocks.delete(chatId);
+          }
+        }
+      })();
+      
+      // Store the promise for concurrent call detection
+      sendLocks.set(chatId, sendPromise);
+      
+      // Wait for this send to complete
+      await sendPromise;
     },
     
     /**

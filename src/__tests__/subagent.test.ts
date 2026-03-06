@@ -143,4 +143,44 @@ describe("subagent", () => {
       await expect(handleSubagentEnded(endEvent)).resolves.not.toThrow();
     });
   });
+
+  describe("concurrent operations", () => {
+    it("should handle multiple subagents spawning to same chat", async () => {
+      const chatId = "chat:oc_concurrent";
+      
+      // Spawn 3 subagents to the same chat
+      const spawnEvents: PluginHookSubagentSpawningEvent[] = [
+        {
+          childSessionKey: "agent:main:subagent:conc-1",
+          agentId: "main",
+          mode: "session",
+          threadRequested: true,
+          requester: { channel: "feishu", accountId: "default", to: chatId },
+        },
+        {
+          childSessionKey: "agent:main:subagent:conc-2",
+          agentId: "main",
+          mode: "session",
+          threadRequested: true,
+          requester: { channel: "feishu", accountId: "default", to: chatId },
+        },
+        {
+          childSessionKey: "agent:main:subagent:conc-3",
+          agentId: "main",
+          mode: "session",
+          threadRequested: true,
+          requester: { channel: "feishu", accountId: "default", to: chatId },
+        },
+      ];
+
+      const results = await Promise.all(
+        spawnEvents.map(event => handleSubagentSpawning(event, mockConfig))
+      );
+
+      // All should succeed
+      results.forEach(result => {
+        expect(result.status).toBe("ok");
+      });
+    });
+  });
 });
